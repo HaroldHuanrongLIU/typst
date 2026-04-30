@@ -32,12 +32,14 @@ impl<T> Id<T> {
     }
 
     /// Cast to a compatible ID.
+    /// Downcasting may be invalid.
     #[inline]
     pub const fn downcast<U: KeyFor<T>>(self) -> Id<U> {
         Id::new(self.idx())
     }
 
     /// Cast to a compatible ID.
+    /// Upcasting is always valid.
     #[inline]
     pub const fn upcast<U>(self) -> Id<U>
     where
@@ -90,20 +92,46 @@ impl<T> std::hash::Hash for Id<T> {
     }
 }
 
-/// An end-inclusive [`Id`] range.
+/// An end-exclusive [`Id`] range.
 pub struct IdRange<I> {
-    start: I,
-    /// Inclusive end-index.
-    end: I,
+    pub start: I,
+    pub end: I,
 }
 
 impl<T> IdRange<Id<T>> {
-    pub fn new<U: KeyFor<T>>(id: Id<U>) -> Self {
-        Self { start: id.upcast(), end: id.upcast() }
+    /// Creates a new range.
+    pub fn new(start: Id<T>, end: Id<T>) -> Self {
+        Self { start, end }
     }
 
-    pub fn include<U: KeyFor<T>>(&mut self, id: Id<U>) {
-        self.end = id.upcast();
+    /// Creates an empty range directly after the [`Id`].
+    pub fn after(id: Id<T>) -> Self {
+        Self::at(Id::new(id.idx() + 1))
+    }
+
+    /// Creates an empty range at the [`Id`].
+    pub fn at(id: Id<T>) -> Self {
+        Self::new(id, id)
+    }
+
+    /// The length of the range.
+    pub fn len(&self) -> usize {
+        self.end.idx() - self.start.idx()
+    }
+
+    /// Whether this range is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Whether this range contains the id.
+    pub fn contains(self, id: Id<T>) -> bool {
+        (self.start..self.end).contains(&id)
+    }
+
+    /// Returns the range of the [`Id::idx`] indices.
+    pub fn idx(self) -> std::ops::Range<usize> {
+        self.start.idx()..self.end.idx()
     }
 }
 
@@ -155,6 +183,10 @@ impl<T> IdVec<T> {
         Self { inner: Vec::new() }
     }
 
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self { inner: Vec::with_capacity(capacity) }
+    }
+
     pub fn next_id<U>(&self) -> Id<U>
     where
         U: KeyFor<T>,
@@ -184,6 +216,14 @@ impl<T> IdVec<T> {
         U: KeyFor<T>,
     {
         &mut self.inner[id.idx()]
+    }
+
+    #[cfg_attr(debug_assertions, track_caller)]
+    pub fn get_range<U>(&self, ids: IdRange<Id<U>>) -> &[T]
+    where
+        U: KeyFor<T>,
+    {
+        &self.inner[ids.idx()]
     }
 
     pub fn iter(&self) -> std::slice::Iter<'_, T> {
@@ -230,6 +270,12 @@ pub struct IdMap<K, V> {
 impl<K, V> Default for IdMap<K, V> {
     fn default() -> Self {
         Self { inner: Default::default() }
+    }
+}
+
+impl<K, V> From<IndexMap<K, V, FxBuildHasher>> for IdMap<K, V> {
+    fn from(inner: IndexMap<K, V, FxBuildHasher>) -> Self {
+        Self { inner }
     }
 }
 
@@ -285,16 +331,6 @@ impl<K, V> IdMap<K, V> {
         &mut self.inner[id.idx()]
     }
 
-    #[cfg_attr(debug_assertions, track_caller)]
-    pub fn lookup_id<Q, U>(&self, key: &Q) -> Option<Id<U>>
-    where
-        Q: ?Sized + Hash + Equivalent<K>,
-        U: KeyFor<V>,
-    {
-        let idx = self.inner.get_index_of(key)?;
-        Some(Id::new(idx))
-    }
-
     pub fn ids(
         &self,
     ) -> impl ExactSizeIterator<Item = Id<V>> + DoubleEndedIterator + use<K, V> {
@@ -334,6 +370,15 @@ where
         self.inner.insert(key, value)
     }
 
+    pub fn lookup_id<Q, U>(&self, key: &Q) -> Option<Id<U>>
+    where
+        Q: ?Sized + Hash + Equivalent<K>,
+        U: KeyFor<V>,
+    {
+        let idx = self.inner.get_index_of(key)?;
+        Some(Id::new(idx))
+    }
+
     pub fn get<Q>(&self, key: &Q) -> Option<&V>
     where
         Q: ?Sized + Hash + Equivalent<K>,
@@ -348,6 +393,24 @@ where
         self.inner.get_mut(key)
     }
 
+    pub fn get_full<Q, U>(&self, key: &Q) -> Option<(Id<U>, &K, &V)>
+    where
+        Q: ?Sized + Hash + Equivalent<K>,
+        U: KeyFor<V>,
+    {
+        let (idx, key, val) = self.inner.get_full(key)?;
+        Some((Id::new(idx), key, val))
+    }
+
+    pub fn get_full_mut<Q, U>(&mut self, key: &Q) -> Option<(Id<U>, &K, &mut V)>
+    where
+        Q: ?Sized + Hash + Equivalent<K>,
+        U: KeyFor<V>,
+    {
+        let (idx, key, val) = self.inner.get_full_mut(key)?;
+        Some((Id::new(idx), key, val))
+    }
+
     pub fn contains_key<Q>(&self, key: &Q) -> bool
     where
         Q: ?Sized + Hash + Equivalent<K>,
@@ -355,18 +418,25 @@ where
         self.inner.contains_key(key)
     }
 
-    pub fn entry(&mut self, key: K) -> Entry<'_, K, V> {
-        Entry { inner: self.inner.entry(key) }
+    pub fn entry(&mut self, key: K) -> IdEntry<'_, K, V> {
+        IdEntry { inner: self.inner.entry(key) }
     }
 }
 
-pub struct Entry<'a, K, V> {
+pub struct IdEntry<'a, K, V> {
     inner: indexmap::map::Entry<'a, K, V>,
 }
 
-impl<'a, K, V> Entry<'a, K, V> {
+impl<'a, K, V> IdEntry<'a, K, V> {
     pub fn or_insert(self, default: V) -> &'a mut V {
         self.inner.or_insert(default)
+    }
+
+    pub fn or_insert_with<F>(self, call: F) -> &'a mut V
+    where
+        F: FnOnce() -> V,
+    {
+        self.inner.or_insert_with(call)
     }
 
     pub fn or_default(self) -> &'a mut V

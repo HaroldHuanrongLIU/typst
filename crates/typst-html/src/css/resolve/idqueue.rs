@@ -83,6 +83,19 @@ where
         self.sift_up_or_down(idx);
     }
 
+    /// Create an iterator that drains this queue in priority order.
+    pub fn drain(self) -> Drain<'a, T, F> {
+        Drain(self)
+    }
+
+    /// Returns the backing slice of the binary heap.
+    ///
+    /// The first item is the item with the highest priority, the order of all
+    /// other items can't be cheaply computed without draining the queue.
+    pub fn as_slice(&self) -> &[Id<T>] {
+        &self.heap
+    }
+
     /// Rebuilds the binary heap structure.
     ///
     /// This has worst case complexity of `O(n log(n))`.
@@ -167,7 +180,25 @@ where
     }
 }
 
-impl<T, F, P> Iterator for IdQueue<'_, T, F>
+impl<'a, T, F, P> IntoIterator for IdQueue<'a, T, F>
+where
+    F: Fn(Id<T>) -> P,
+    P: Ord,
+{
+    type Item = Id<T>;
+
+    type IntoIter = Drain<'a, T, F>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Drain(self)
+    }
+}
+
+/// An iterator that drains the priority queue by continuously calling
+/// [`IdQueue::pop`].
+pub struct Drain<'a, T, F>(IdQueue<'a, T, F>);
+
+impl<T, F, P> Iterator for Drain<'_, T, F>
 where
     F: Fn(Id<T>) -> P,
     P: Ord,
@@ -175,7 +206,7 @@ where
     type Item = Id<T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.pop()
+        self.0.pop()
     }
 }
 
@@ -225,7 +256,7 @@ mod tests {
     where
         F: Fn(Id<Item>) -> u128,
     {
-        queue.map(|id| items.get(id).priority.get()).collect()
+        queue.drain().map(|id| items.get(id).priority.get()).collect()
     }
 
     #[test]
